@@ -1,3 +1,4 @@
-First version of the CSD scripts.
-Two algorithms separated in the function scripts.
-In the main.py, a network is arbitrarily created for now.
+Updated version of the scripts.
+MCA code is now modular for better understanding, while keeping it's speed.
+FISTA has been updated.
+
