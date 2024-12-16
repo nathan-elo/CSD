@@ -32,7 +32,8 @@ def main():
     theta_p = 1
     theta_c = 1
 
-    z_rs_bar = np.ones(rs_size)
+    z_rs_bar = np.zeros(rs_size)
+    z_rs_bar +=1
     y_od_bar = 2
     c_rs = np.zeros((rs_size, K))
     for r_s in range(rs_size):
