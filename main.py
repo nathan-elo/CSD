@@ -1,44 +1,66 @@
 import numpy as np
 from fista import FISTA
-from MCA_func_modular import compute_MC_and_grad_MC
-from MCA_func_modular import compute_MC_and_grad_MC_return_intermediate
-from MCA_func_modular import compute_y_distrib
-from MCA_func_modular import compute_z_rs_1
-from MCA_func_modular import compute_z_rs_0
+
+from MCA_modified import compute_MC_and_grad_MC
+from MCA_modified import compute_MC_and_grad_MC_return_intermediate
+from MCA_modified import compute_y_distrib
+from MCA_modified import compute_z_rs_1
+from MCA_modified import compute_z_rs_0
+
 import matplotlib.pyplot as plt
-import time 
+import time
 
 def main():
     seed = 42
+    # Each r connected to each s node
     o_dict = {
-        "1": {"2": 2, "3": 2,"9" : 1, "6": 5,"7" : 5},
-        "8": {"2": 1, "3": 1,"9" : 1, "6": 5,"7" : 5}
+        "1": {"2": 1, "3": 1,"9" : 1,"11" : 1, "6": 3,"7" : 3,"12" : 6},
+        "8": {"2": 1, "3": 1,"9" : 1,"11" : 1, "6": 3,"7" : 3,"12" : 6},
+        "13": {"2": 1, "3": 1,"9" : 1,"11" : 1, "6": 3,"7" : 3,"12" : 6},
+        "14": {"2": 1, "3": 1,"9" : 1,"11" : 1, "6": 3,"7" : 3,"12" : 6},
+        "15": {"2": 1, "3": 1,"9" : 1,"11" : 1, "6": 3,"7" : 3,"12" : 6}
+
     }
     r_dict = {
-        "2": {"4": 1},
-        "3": {"5": 1},
-        "9": {"10": 1}
+        "2": {"4": 1, "5":1,"10":1},
+        "3": {"4": 1, "5":1,"10":1},
+        "9": {"4": 1, "5":1,"10":1},
+        "11" : {"4": 1, "5":1,"10":1}
     }
     s_dict = {
-        "4": {"2": 1, "3": 3,"9" : 1, "6": 6,"7" : 6},
-        "5": {"2": 2, "3": 1,"9" : 1, "6": 6,"7" : 6},
-        "10": {"2": 2, "3": 1,"9" : 1, "6": 6,"7" : 6}
+        "4": {"2": 1, "3": 1,"9" : 1,"11" : 1, "6": 6,"7" : 6,"12" : 6},
+        "5": {"2": 1, "3": 1,"9" : 1,"11" : 1, "6": 6,"7" : 6,"12" : 6},
+        "10": {"2": 1, "3": 1,"9" : 1,"11" : 1, "6": 6,"7" : 6,"12" : 6} 
     }
-    d_dict = {"6": {}, "7" : {}}
+    d_dict = {
+        "6": {},
+        "7" : {},
+        "12": {}
+    }
 
-    n_size = 4
-    rs_size = 3
+    n_size = 15  # number of deliveries to be made
+    r_size=len(r_dict)
+    s_size=len(s_dict)
+    o_size=len(o_dict)
+    d_size=len(d_dict)
     K = 2
-    theta_p = 1
-    theta_c = 1
+    theta_p = 5
+    theta_c = 5 
 
-    z_rs_bar = np.ones(rs_size)
-    y_od_bar = 2
-    c_rs = np.zeros((rs_size, K))
-    for r_s in range(rs_size):
-        c_rs[r_s, 1] = 5
-        c_rs[r_s, 0] = c_rs[r_s, 1] + 2
+    
+    z_rs_bar = np.zeros((r_size,s_size))
+    z_rs_bar +=1
+    y_od_bar = np.zeros((o_size,d_size))
+    y_od_bar +=10
 
+    # Set c_rs and v 
+    c_rs = np.zeros((r_size, s_size, K))
+    for rr in range(r_size):
+        for ss in range(s_size):
+            c_rs[rr, ss, 1] = 2 #doesn't have an impact on distribution, and final price.
+            c_rs[rr, ss, 0] = c_rs[rr, ss, 1] + 1 # cost difference # has an impact higher difference, more incentives to do deliveries.
+
+    #c_rs *= 10
     class Subalgorithm:
         def __init__(self, o_dict, r_dict, s_dict, d_dict, n_size, K, theta_p, theta_c, z_rs_bar, y_od_bar, c_rs, seed):
             self.o_dict = o_dict
@@ -66,41 +88,36 @@ def main():
 
     subalgorithm = Subalgorithm(o_dict, r_dict, s_dict, d_dict, n_size, K, theta_p, theta_c, z_rs_bar, y_od_bar, c_rs, seed)
 
-    v0 = np.ones(rs_size)
-    start_time = time.time()
-    fista = FISTA(subalgorithm, L0=1.0, eta=1.1, epsilon=1e-5, max_iter=100)
-    optimal_v = fista.optimize(v0)
-    end_time = time.time()
+    # Start from zero to let algorithm find direction
+    v0 = np.zeros((r_size,s_size))
+    v0 +=1
 
-    _, _, C_rs, sum_exp, theta_c_val, P_od_rs, P_od_no_rs, P_sd_rs, node_to_index, r_to_s_mapping, d_nodes, o_nodes, r_nodes = subalgorithm.run_fr_sol(optimal_v)
+    start_time = time.time()
+    # tighter epsilon, more iterations for better convergence
+    fista = FISTA(subalgorithm, L0=1, eta=1.1, epsilon=1e-4, max_iter=100)
+    optimal_v = fista.optimize(v0)
+   
+    MC_fin, _, C_rs, sum_exp, theta_c_val, P_od_rs,P_sd_rs, node_to_index, d_nodes, o_nodes, r_nodes, s_nodes = subalgorithm.run_fr_sol(optimal_v)
+
     z_rs_1_values = compute_z_rs_1(z_rs_bar, C_rs, sum_exp, optimal_v, theta_c_val)
     z_rs_0_values = compute_z_rs_0(z_rs_bar, C_rs, sum_exp, optimal_v, theta_c_val)
 
     y_od_rs, y_rs = compute_y_distrib(
-        r_size=len(r_nodes),
+        r_size=r_size,
         n_size=n_size,
-        s_size=len(r_to_s_mapping), 
+        s_size=s_size,
         o_size=len(o_nodes),
         d_size=len(d_nodes),
         y_od_bar=y_od_bar*np.ones((len(o_nodes), len(d_nodes))),
         P_od_rs=P_od_rs,
-        P_od_no_rs=P_od_no_rs,
-        P_sd_rs=P_sd_rs,
-        node_to_index=node_to_index,
-        r_to_s_mapping=r_to_s_mapping,
-        d_nodes=d_nodes,
-        o_nodes=o_nodes,
-        r_nodes=r_nodes
+        P_sd_rs=P_sd_rs
     )
-
+    end_time = time.time()
+    print("MC*: ",MC_fin)
     print("v*:", np.round(optimal_v,4))
     print("Time:", np.round((end_time - start_time)*1000,3), "ms")
-    #print("y_od_rs distribution:")
-    #print(y_od_rs)
     print("y_rs:")
     print(np.round(y_rs,4))
-    #print("z_rs_0:")
-    #print(z_rs_0_values)
     print("z_rs_1:")
     print(np.round(z_rs_1_values,4))
 
