@@ -1,0 +1,188 @@
+from pulp import *
+import time
+import numpy as np
+import itertools
+
+def run_optimization(seed1):
+    origins       = [f"O{i}" for i in range(1,3)]   # e.g. O1, O2
+    r_nodes       = [f"R{i}" for i in range(1,5)]   # e.g. R1, R2, R3
+    s_nodes       = [f"S{i}" for i in range(1,5)]   # e.g. S1, S2, S3
+    destinations  = [f"D{i}" for i in range(1,3)]   # e.g. D1, D2
+    seed = 42
+    theta_c = 5
+    rng = np.random.default_rng(seed)
+#creating a node+cost dictionnary
+
+    o_dict = {}
+    for o in origins:
+        links = {}
+
+        for r in r_nodes:
+            links[r] = int(rng.integers(1,4))
+
+        for d in destinations:
+            links[d] = int(rng.integers(4,7))
+        o_dict[o] = links
+    r_dict = {}
+    for r in r_nodes:
+        links = {}
+
+        for s in s_nodes:
+            links[s] = int(rng.integers(2,5))
+        r_dict[r] = links
+    s_dict = {}
+    for s in s_nodes:
+        links = {}
+
+        for rr in r_nodes:
+            links[rr] = int(rng.integers(1,3))
+
+        for d in destinations:
+            links[d] = int(rng.integers(3,7))
+        s_dict[s] = links
+    d_dict = {d: {} for d in destinations}
+
+    #creating an edges dictionnary
+    edges = {}
+    for o, link_dict in o_dict.items():
+        for v, c_uv in link_dict.items():
+            edges[(o, v)] = c_uv
+    for r, link_dict in r_dict.items():
+        for v, c_uv in link_dict.items():
+            edges[(r, v)] = c_uv
+    for s, link_dict in s_dict.items():
+        for v, c_uv in link_dict.items():
+            edges[(s, v)] = c_uv
+
+    r_size = len(r_nodes)
+    s_size = len(s_nodes)
+    o_size = len(origins)
+    d_size = len(destinations)
+    ship_per_del = 1
+    z_rs_bar = np.zeros((r_size, s_size))
+    z_rs_bar += ship_per_del
+    y_od_bar = np.zeros((o_size, d_size))
+    y_od_bar += 4
+
+    num_drivers  = int(np.sum(y_od_bar))   # e.g. 2 * 2 * 12 = 48
+    num_shippers = int(np.sum(z_rs_bar))   # e.g. 3 * 3 * 2 = 18
+
+    drivers   = [f"a{i+1}" for i in range(num_drivers)]
+    shippers  = [f"b{i+1}" for i in range(num_shippers)]
+
+    #create every rs_pair
+    rs_pairs = []
+    for r, s in itertools.product(r_nodes, s_nodes):
+        rs_pairs.append(r + s)  
+
+    # assign shippers to deliveries
+    delivery_to_shippers = {}
+    idx = 0
+    for rs in rs_pairs:
+        delivery_to_shippers[rs] = shippers[idx : idx + ship_per_del]
+        idx += ship_per_del
+    #add costs for drivers for every link
+    c_a_e = {}
+    for a in drivers:
+        for (u,v), cost_uv in edges.items():
+            c_a_e[(a,u,v)] = cost_uv
+
+    rng1 = np.random.default_rng(seed1)
+    epsilon = rng1.gumbel(0, theta_c, size=(len(shippers),2)) * 0.05
+
+    cost_shipper_delivery = {}
+    cost_outsource = 2
+    margin_self    = 3.5
+    for i,b in enumerate(shippers):
+        cost_shipper_delivery[(b,1)] = cost_outsource + epsilon[i,1]
+        cost_shipper_delivery[(b,0)] = cost_outsource + margin_self + epsilon[i,0]
+
+    # LP program
+    start_time = time.time()
+    prob = LpProblem("CSD_SO_MILP_edge", LpMinimize)
+
+    #new variable x
+    x = LpVariable.dicts(
+        "x",
+        [(a,u,v) for a in drivers for (u,v) in edges],
+        lowBound=0,
+        upBound=None,
+        cat=LpInteger
+    )
+
+    n_b_k = LpVariable.dicts(
+        "n",
+        [(b,k) for b in shippers for k in [0,1]],
+        lowBound=0,
+        upBound=1,
+        cat=LpBinary
+    )
+
+    #objective function
+    prob += (
+        lpSum(c_a_e[(a,u,v)] * x[(a,u,v)] for a in drivers for (u,v) in edges) +
+        lpSum(cost_shipper_delivery[(b,k)] * n_b_k[(b,k)] for b in shippers for k in [0,1])
+    )
+
+    #Constraints
+    #1
+    for a in drivers:
+        prob += lpSum(x[(a,o,v)] for o in origins for (u,v) in edges if u == o) == 1
+    #2
+    for a in drivers:
+        for node in (r_nodes + s_nodes):
+            in_edges  = [(u,v) for (u,v) in edges if v == node]
+            out_edges = [(u,v) for (u,v) in edges if u == node]
+            prob += lpSum(x[(a,u,v)] for (u,v) in in_edges) == lpSum(x[(a,u,v)] for (u,v) in out_edges)
+    #3
+    for a in drivers:
+        prob += lpSum(x[(a,u,d)] for d in destinations for (u,v) in edges if v == d) == 1
+    #4
+    for b in shippers:
+        prob += lpSum(n_b_k[(b,k)] for k in [0,1]) == 1
+    #5
+    for rs in rs_pairs:
+        r_str = rs[:2]  # e.g. "R1"
+        s_str = rs[2:]  # e.g. "S2"
+        lhs = lpSum(x[(a,r_str,s_str)] for a in drivers if (r_str, s_str) in edges)
+        rhs = lpSum(n_b_k[(b,1)] for b in delivery_to_shippers[rs])
+        prob += (lhs == rhs)
+    #6
+    col=2
+    max_path_length = 1+2*col # choose any integer
+    for a in drivers:
+        prob += lpSum(x[(a,u,v)] for (u,v) in edges) <= max_path_length, f"MaxLen_{a}"
+
+    #solve
+    prob.solve(PULP_CBC_CMD(msg=0, threads=4, gapRel=0.01,timeLimit=10, presolve=True))
+    end_time = time.time()
+
+    objective_value = value(prob.objective)
+    solve_time = (end_time - start_time)
+
+    return objective_value, solve_time
+
+def main():
+
+    runs = 15
+    obj_values = []
+    times = []
+    seed_list = [10*i for i in range(1, runs+1)]
+
+    for run_id, seed1 in enumerate(seed_list, start=1):
+        obj_val, solve_t = run_optimization(seed1)
+        obj_values.append(obj_val)
+        times.append(solve_t)
+        print(f"[Run {run_id}] seed1={seed1}, Objective={obj_val:.4f}, Time={solve_t:.4f} s")
+
+    # Compute min, mean, max
+    min_obj, mean_obj, max_obj = np.round(np.min(obj_values),4), np.round(np.mean(obj_values),4), np.round(np.max(obj_values),4)
+    min_t, mean_t, max_t = np.round(np.min(times),4), np.round(np.mean(times),4), np.round(np.max(times),4)
+
+    print("\n=== Summary over multiple runs ===")
+    print("min=",min_obj,"mean=", mean_obj,"max=",max_obj)  
+    print("min=",min_t,"mean=", mean_t,"max=",max_t)
+
+
+if __name__ == "__main__":
+    main()
